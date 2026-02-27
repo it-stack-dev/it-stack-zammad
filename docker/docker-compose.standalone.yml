@@ -1,0 +1,29 @@
+# Lab 01 — Standalone: Complete Zammad help desk and ticketing in isolation
+# No external dependencies required.
+---
+services:
+  zammad:
+    image: zammad/zammad-docker-compose:latest
+    container_name: it-stack-zammad
+    restart: unless-stopped
+    ports:
+      - "3000:$firstPort"
+    environment:
+      - IT_STACK_ENV=lab-01-standalone
+    volumes:
+      - zammad_data:/var/lib/zammad
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    driver: bridge
+
+volumes:
+  zammad_data:

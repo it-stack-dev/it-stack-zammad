@@ -1,0 +1,56 @@
+# it-stack-zammad.yml — IT-Stack Module Manifest
+# Module 11: Zammad help desk and ticketing
+
+module:
+  name: zammad
+  number: "11"
+  repo: it-stack-dev/it-stack-zammad
+  version: "0.1.0"
+  phase: 2
+  category: communications
+  server: lab-comm1
+  description: "Zammad help desk and ticketing"
+
+upstream:
+  name: Zammad
+  image: zammad/zammad-docker-compose:latest
+  license: AGPL-3.0
+
+ports:
+  - 3000 (HTTP)
+
+labs:
+  - id: "11-01"
+    name: Standalone
+    docker_compose: docker/docker-compose.standalone.yml
+    test_script: tests/labs/test-lab-11-01.sh
+  - id: "11-02"
+    name: External Dependencies
+    docker_compose: docker/docker-compose.lan.yml
+    test_script: tests/labs/test-lab-11-02.sh
+  - id: "11-03"
+    name: Advanced Features
+    docker_compose: docker/docker-compose.advanced.yml
+    test_script: tests/labs/test-lab-11-03.sh
+  - id: "11-04"
+    name: SSO Integration
+    docker_compose: docker/docker-compose.sso.yml
+    test_script: tests/labs/test-lab-11-04.sh
+  - id: "11-05"
+    name: Advanced Integration
+    docker_compose: docker/docker-compose.integration.yml
+    test_script: tests/labs/test-lab-11-05.sh
+  - id: "11-06"
+    name: Production Deployment
+    docker_compose: docker/docker-compose.production.yml
+    test_script: tests/labs/test-lab-11-06.sh
+
+resources:
+  cpu_cores: 2
+  ram_gb: 4
+  disk_gb: 20
+
+health_check:
+  endpoint: /health
+  metrics_endpoint: /metrics
+  log_path: /var/log/zammad/

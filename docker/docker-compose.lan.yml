@@ -1,0 +1,36 @@
+# Lab 02 — External Dependencies: zammad with external PostgreSQL and Redis
+---
+services:
+  zammad:
+    image: zammad/zammad-docker-compose:latest
+    container_name: it-stack-zammad
+    restart: unless-stopped
+    ports:
+      - "3000:$firstPort"
+    environment:
+      - IT_STACK_ENV=lab-02-lan
+      - DB_HOST=
+      - DB_PORT=5432
+      - REDIS_HOST=
+    networks:
+      - it-stack-net
+
+  # Lightweight local DB for lab (replace with lab-db1 in real env)
+  postgres:
+    image: postgres:16
+    container_name: it-stack-zammad-db
+    environment:
+      POSTGRES_DB: zammad_db
+      POSTGRES_USER: zammad_user
+      POSTGRES_PASSWORD: zammad_pass
+    volumes:
+      - zammad_pg_data:/var/lib/postgresql/data
+    networks:
+      - it-stack-net
+
+networks:
+  it-stack-net:
+    driver: bridge
+
+volumes:
+  zammad_pg_data:
