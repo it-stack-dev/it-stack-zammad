@@ -1,29 +1,149 @@
-# Lab 01 — Standalone: Complete Zammad help desk and ticketing in isolation
-# No external dependencies required.
+# Lab 01 — Standalone: Zammad ticketing and help desk
+# Self-contained — Zammad + PostgreSQL + Elasticsearch + Memcached
+# Access: http://localhost:3000  Admin setup on first visit
 ---
+x-zammad-env: &zammad-env
+  ELASTICSEARCH_HOST: elasticsearch
+  ELASTICSEARCH_PORT: 9200
+  ELASTICSEARCH_ENABLED: "true"
+  POSTGRESQL_HOST: postgresql
+  POSTGRESQL_PORT: 5432
+  POSTGRESQL_DB: zammad_production
+  POSTGRESQL_USER: zammad
+  POSTGRESQL_PASS: Lab01Password!
+  MEMCACHE_SERVERS: "memcached:11211"
+  RAILS_TRUSTED_PROXIES: "['127.0.0.1', '::1']"
+  ZAMMAD_RAILSSERVER_HOST: zammad-railsserver
+  ZAMMAD_WEBSOCKET_HOST: zammad-websocket
+
 services:
-  zammad:
-    image: zammad/zammad-docker-compose:latest
-    container_name: it-stack-zammad
+  postgresql:
+    image: postgres:15-alpine
+    container_name: it-stack-zammad-db
     restart: unless-stopped
-    ports:
-      - "3000:$firstPort"
     environment:
-      - IT_STACK_ENV=lab-01-standalone
+      POSTGRES_DB: zammad_production
+      POSTGRES_USER: zammad
+      POSTGRES_PASSWORD: Lab01Password!
     volumes:
-      - zammad_data:/var/lib/zammad
+      - zammad-postgresql-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD-SHELL", "pg_isready -U zammad -d zammad_production"]
+      interval: 10s
+      timeout: 5s
       retries: 5
+    networks:
+      - zammad-standalone-net
+
+  elasticsearch:
+    image: bitnami/elasticsearch:8
+    container_name: it-stack-zammad-es
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_ENABLE_SECURITY: "false"
+      ELASTICSEARCH_SKIP_TRANSPORT_TLS: "true"
+    volumes:
+      - zammad-elasticsearch-data:/bitnami/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
       start_period: 60s
     networks:
-      - it-stack-net
+      - zammad-standalone-net
+
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: it-stack-zammad-memcached
+    restart: unless-stopped
+    command: memcached -m 256M
+    networks:
+      - zammad-standalone-net
+
+  zammad-init:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: it-stack-zammad-init
+    command: ["zammad", "init"]
+    restart: on-failure
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment: *zammad-env
+    volumes:
+      - zammad-data:/opt/zammad
+    networks:
+      - zammad-standalone-net
+
+  zammad-railsserver:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: it-stack-zammad-rails
+    command: ["zammad", "run", "rails"]
+    restart: unless-stopped
+    depends_on:
+      - zammad-init
+      - memcached
+    environment: *zammad-env
+    volumes:
+      - zammad-data:/opt/zammad
+    networks:
+      - zammad-standalone-net
+
+  zammad-scheduler:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: it-stack-zammad-scheduler
+    command: ["zammad", "run", "scheduler"]
+    restart: unless-stopped
+    depends_on:
+      - zammad-railsserver
+    environment: *zammad-env
+    volumes:
+      - zammad-data:/opt/zammad
+    networks:
+      - zammad-standalone-net
+
+  zammad-websocket:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: it-stack-zammad-websocket
+    command: ["zammad", "run", "websocket"]
+    restart: unless-stopped
+    depends_on:
+      - zammad-railsserver
+    environment: *zammad-env
+    volumes:
+      - zammad-data:/opt/zammad
+    networks:
+      - zammad-standalone-net
+
+  zammad-nginx:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: it-stack-zammad-nginx
+    command: ["zammad", "run", "nginx"]
+    restart: unless-stopped
+    depends_on:
+      - zammad-railsserver
+      - zammad-websocket
+    ports:
+      - "3000:8080"
+    environment: *zammad-env
+    volumes:
+      - zammad-data:/opt/zammad
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ | grep -qi zammad || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    networks:
+      - zammad-standalone-net
 
 networks:
-  it-stack-net:
+  zammad-standalone-net:
     driver: bridge
 
 volumes:
-  zammad_data:
+  zammad-postgresql-data:
+  zammad-elasticsearch-data:
+  zammad-data:
