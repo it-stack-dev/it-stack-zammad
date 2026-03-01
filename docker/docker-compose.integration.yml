@@ -1,26 +1,207 @@
-# Lab 05 — Advanced Integration: zammad with full IT-Stack ecosystem
----
+# docker-compose.integration.yml -- Lab 05: Advanced Integration
+# Zammad + OpenLDAP (FreeIPA sim) + PostgreSQL + Elasticsearch + Redis + Keycloak + SMTP
+# Lab 05 tests: LDAP user import, OIDC SSO, ES full-text search, email ticket creation
+#
+# Ports:
+#   3001 -- Zammad (nginx)
+#   8110 -- Keycloak admin console
+#   3893 -- OpenLDAP
+#
+# Credentials:
+#   LDAP admin:    cn=admin,dc=lab,dc=local / LdapAdmin05!
+#   LDAP readonly: cn=readonly,dc=lab,dc=local / ReadOnly05!
+#   DB:            zammad / Lab05Password!
+#   Redis:         Lab05Redis!
+#   Keycloak:      admin / Lab05Admin!
+#   OIDC secret:   zammad-secret-05
+
+x-zammad-int-env: &zammad-int-env
+  POSTGRESQL_HOST: zammad-int-postgresql
+  POSTGRESQL_PORT: "5432"
+  POSTGRESQL_DB: zammad
+  POSTGRESQL_USER: zammad
+  POSTGRESQL_PASS: Lab05Password!
+  ELASTICSEARCH_HOST: zammad-int-elasticsearch
+  ELASTICSEARCH_PORT: "9200"
+  REDIS_URL: redis://:Lab05Redis!@zammad-int-redis:6379
+  RAILS_MAX_THREADS: "5"
+  WEB_CONCURRENCY: "2"
+
 services:
-  zammad:
-    image: zammad/zammad-docker-compose:latest
-    container_name: it-stack-zammad
-    restart: unless-stopped
-    ports:
-      - "3000:$firstPort"
+  zammad-int-ldap:
+    image: osixia/openldap:1.5.0
+    container_name: zammad-int-ldap
     environment:
-      - IT_STACK_ENV=lab-05-integration
-      - KEYCLOAK_URL=
-      - DB_HOST=
-      - REDIS_HOST=
-      - SMTP_HOST=
-      - GRAYLOG_HOST=
-    extra_hosts:
-      - "lab-id1:10.0.50.11"
-      - "lab-db1:10.0.50.12"
-      - "lab-proxy1:10.0.50.15"
+      LDAP_ORGANISATION: "IT-Stack Lab"
+      LDAP_DOMAIN: lab.local
+      LDAP_ADMIN_PASSWORD: LdapAdmin05!
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: ReadOnly05!
+    ports:
+      - "3893:389"
     networks:
-      - it-stack-net
+      - zammad-int-app-net
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapAdmin05! > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  zammad-int-postgresql:
+    image: postgres:15-alpine
+    container_name: zammad-int-postgresql
+    environment:
+      POSTGRES_DB: zammad
+      POSTGRES_USER: zammad
+      POSTGRES_PASSWORD: Lab05Password!
+    volumes:
+      - zammad-int-pg-data:/var/lib/postgresql/data
+    networks:
+      - zammad-int-data-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zammad"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zammad-int-elasticsearch:
+    image: elasticsearch:8.11.1
+    container_name: zammad-int-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - zammad-int-es-data:/usr/share/elasticsearch/data
+    networks:
+      - zammad-int-data-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  zammad-int-redis:
+    image: redis:7-alpine
+    container_name: zammad-int-redis
+    command: redis-server --requirepass Lab05Redis!
+    networks:
+      - zammad-int-data-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "Lab05Redis!", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zammad-int-keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: zammad-int-keycloak
+    command: start-dev
+    environment:
+      KC_HEALTH_ENABLED: "true"
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Lab05Admin!
+    ports:
+      - "8110:8080"
+    networks:
+      - zammad-int-app-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready | grep -q UP || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  zammad-int-smtp:
+    image: mailhog/mailhog:latest
+    container_name: zammad-int-smtp
+    ports:
+      - "8026:8025"
+    networks:
+      - zammad-int-mail-net
+
+  zammad-int-init:
+    image: ghcr.io/zammad/zammad:latest
+    container_name: zammad-int-init
+    command: ["zammad", "init"]
+    depends_on:
+      zammad-int-postgresql:
+        condition: service_healthy
+      zammad-int-elasticsearch:
+        condition: service_healthy
+      zammad-int-redis:
+        condition: service_healthy
+    environment:
+      <<: *zammad-int-env
+    networks:
+      - zammad-int-app-net
+      - zammad-int-data-net
+
+  zammad-int-railsserver:
+    image: ghcr.io/zammad/zammad:latest
+    container_name: zammad-int-railsserver
+    command: ["zammad", "run", "rails-server"]
+    depends_on:
+      - zammad-int-init
+    environment:
+      <<: *zammad-int-env
+    networks:
+      - zammad-int-app-net
+      - zammad-int-data-net
+      - zammad-int-mail-net
+
+  zammad-int-scheduler:
+    image: ghcr.io/zammad/zammad:latest
+    container_name: zammad-int-scheduler
+    command: ["zammad", "run", "scheduler"]
+    depends_on:
+      - zammad-int-init
+    environment:
+      <<: *zammad-int-env
+    networks:
+      - zammad-int-app-net
+      - zammad-int-data-net
+
+  zammad-int-websocket:
+    image: ghcr.io/zammad/zammad:latest
+    container_name: zammad-int-websocket
+    command: ["zammad", "run", "websocket-server"]
+    depends_on:
+      - zammad-int-init
+    environment:
+      <<: *zammad-int-env
+    networks:
+      - zammad-int-app-net
+      - zammad-int-data-net
+
+  zammad-int-nginx:
+    image: ghcr.io/zammad/zammad:latest
+    container_name: zammad-int-nginx
+    command: ["zammad", "run", "nginx"]
+    depends_on:
+      - zammad-int-railsserver
+      - zammad-int-websocket
+    environment:
+      <<: *zammad-int-env
+    ports:
+      - "3001:8080"
+    networks:
+      - zammad-int-app-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  zammad-int-pg-data:
+  zammad-int-es-data:
 
 networks:
-  it-stack-net:
-    driver: bridge
+  zammad-int-app-net:
+  zammad-int-data-net:
+  zammad-int-mail-net:
