@@ -1,36 +1,190 @@
-# Lab 02 — External Dependencies: zammad with external PostgreSQL and Redis
----
-services:
-  zammad:
-    image: zammad/zammad-docker-compose:latest
-    container_name: it-stack-zammad
-    restart: unless-stopped
-    ports:
-      - "3000:$firstPort"
-    environment:
-      - IT_STACK_ENV=lab-02-lan
-      - DB_HOST=
-      - DB_PORT=5432
-      - REDIS_HOST=
-    networks:
-      - it-stack-net
+# =============================================================================
+# IT-Stack — Zammad — Lab 02: External Dependencies
+# =============================================================================
+# Three separate networks simulate a real LAN topology:
+#   zammad-data-net  — database/cache tier (PG, ES, Redis)
+#   zammad-mail-net  — mail relay tier (mailhog)
+#   zammad-app-net   — application tier (all Zammad services)
+#
+# Key difference from Lab 01: Redis replaces memcached (REDIS_URL),
+# and mailhog provides a testable SMTP relay.
+#
+# Services:
+#   postgresql     — PostgreSQL 15
+#   elasticsearch  — Bitnami Elasticsearch 8
+#   redis          — Redis 7  (replaces memcached from Lab 01)
+#   smtp           — Mailhog 1.0.1  (:8025 web UI)
+#   zammad-*       — Zammad 6.3.0 × 5  (:3000)
+#
+# Usage:
+#   docker compose -f docker/docker-compose.lan.yml up -d
+#   docker compose -f docker/docker-compose.lan.yml down -v
+# =============================================================================
 
-  # Lightweight local DB for lab (replace with lab-db1 in real env)
-  postgres:
-    image: postgres:16
-    container_name: it-stack-zammad-db
-    environment:
-      POSTGRES_DB: zammad_db
-      POSTGRES_USER: zammad_user
-      POSTGRES_PASSWORD: zammad_pass
-    volumes:
-      - zammad_pg_data:/var/lib/postgresql/data
-    networks:
-      - it-stack-net
+x-zammad-env: &zammad-env
+  POSTGRESQL_HOST: postgresql
+  POSTGRESQL_PORT: '5432'
+  POSTGRESQL_DB: zammad_production
+  POSTGRESQL_USER: zammad
+  POSTGRESQL_PASS: Lab02Password!
+  ELASTICSEARCH_HOST: elasticsearch
+  ELASTICSEARCH_PORT: '9200'
+  REDIS_URL: redis://redis:6379
 
 networks:
-  it-stack-net:
+  zammad-app-net:
+    driver: bridge
+  zammad-data-net:
+    driver: bridge
+  zammad-mail-net:
     driver: bridge
 
 volumes:
-  zammad_pg_data:
+  zammad-lan-postgresql-data:
+  zammad-lan-elasticsearch-data:
+  zammad-lan-redis-data:
+  zammad-lan-data:
+
+services:
+
+  postgresql:
+    image: postgres:15-alpine
+    container_name: zammad-lan-postgresql
+    environment:
+      POSTGRES_DB: zammad_production
+      POSTGRES_USER: zammad
+      POSTGRES_PASSWORD: Lab02Password!
+    volumes:
+      - zammad-lan-postgresql-data:/var/lib/postgresql/data
+    networks:
+      - zammad-data-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zammad -d zammad_production"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  elasticsearch:
+    image: bitnami/elasticsearch:8
+    container_name: zammad-lan-elasticsearch
+    environment:
+      ELASTICSEARCH_ENABLE_SECURITY: "false"
+      ELASTICSEARCH_SKIP_TRANSPORT_TLS: "true"
+    volumes:
+      - zammad-lan-elasticsearch-data:/bitnami/elasticsearch/data
+    networks:
+      - zammad-data-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: zammad-lan-redis
+    command: redis-server --save 60 1
+    volumes:
+      - zammad-lan-redis-data:/data
+    networks:
+      - zammad-data-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  smtp:
+    image: mailhog/mailhog:v1.0.1
+    container_name: zammad-lan-smtp
+    ports:
+      - "8025:8025"    # Mailhog web UI
+    networks:
+      - zammad-mail-net
+    restart: unless-stopped
+
+  zammad-init:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-lan-init
+    command: ["zammad", "init"]
+    environment: *zammad-env
+    volumes:
+      - zammad-lan-data:/opt/zammad
+    networks:
+      - zammad-app-net
+      - zammad-data-net
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  zammad-railsserver:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-lan-railsserver
+    command: ["zammad", "run", "rails"]
+    environment: *zammad-env
+    volumes:
+      - zammad-lan-data:/opt/zammad
+    networks:
+      - zammad-app-net
+      - zammad-data-net
+      - zammad-mail-net
+    depends_on:
+      - zammad-init
+    restart: unless-stopped
+
+  zammad-scheduler:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-lan-scheduler
+    command: ["zammad", "run", "scheduler"]
+    environment: *zammad-env
+    volumes:
+      - zammad-lan-data:/opt/zammad
+    networks:
+      - zammad-app-net
+      - zammad-data-net
+    depends_on:
+      - zammad-railsserver
+    restart: unless-stopped
+
+  zammad-websocket:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-lan-websocket
+    command: ["zammad", "run", "websocket"]
+    environment: *zammad-env
+    volumes:
+      - zammad-lan-data:/opt/zammad
+    networks:
+      - zammad-app-net
+    depends_on:
+      - zammad-railsserver
+    restart: unless-stopped
+
+  zammad-nginx:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-lan-nginx
+    command: ["zammad", "run", "nginx"]
+    environment: *zammad-env
+    volumes:
+      - zammad-lan-data:/opt/zammad
+    ports:
+      - "3000:8080"
+    networks:
+      - zammad-app-net
+    depends_on:
+      - zammad-railsserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ | grep -qi zammad"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
