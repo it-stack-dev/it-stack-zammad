@@ -1,34 +1,204 @@
-# Lab 03 — Advanced Features: zammad with TLS, resource limits, logging
----
+# docker-compose.advanced.yml — Lab 11-03: Advanced Features
+# Zammad with PostgreSQL, Elasticsearch, Redis, mailhog, RAILS_MAX_THREADS, resource limits
+name: zammad-advanced
+
+x-zammad-env: &zammad-env
+  POSTGRESQL_HOST: postgresql
+  POSTGRESQL_PORT: "5432"
+  POSTGRESQL_DB: zammad_production
+  POSTGRESQL_USER: zammad
+  POSTGRESQL_PASS: Lab03Password!
+  ELASTICSEARCH_HOST: elasticsearch
+  ELASTICSEARCH_PORT: "9200"
+  ELASTICSEARCH_ENABLED: "true"
+  REDIS_URL: "redis://redis:6379"
+  RAILS_MAX_THREADS: "5"
+  WEB_CONCURRENCY: "2"
+  ZAMMAD_RAILSSERVER_HOST: railsserver
+  ZAMMAD_WEBSOCKET_HOST: websocket
+
 services:
-  zammad:
-    image: zammad/zammad-docker-compose:latest
-    container_name: it-stack-zammad
-    restart: unless-stopped
-    ports:
-      - "3000:$firstPort"
+  postgresql:
+    image: postgres:15-alpine
+    container_name: zammad-adv-postgresql
     environment:
-      - IT_STACK_ENV=lab-03-advanced
-      - TLS_ENABLED=true
+      POSTGRES_DB: zammad_production
+      POSTGRES_USER: zammad
+      POSTGRES_PASSWORD: Lab03Password!
     volumes:
-      - zammad_data:/var/lib/zammad
-      - ./certs:/etc/ssl/certs:ro
+      - zammad_adv_postgresql:/var/lib/postgresql/data
+    networks:
+      - zammad-data-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zammad -d zammad_production"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    restart: unless-stopped
+
+  elasticsearch:
+    image: bitnami/elasticsearch:8
+    container_name: zammad-adv-elasticsearch
+    environment:
+      ELASTICSEARCH_HEAP_SIZE: 512m
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+    volumes:
+      - zammad_adv_elasticsearch:/bitnami/elasticsearch/data
+    networks:
+      - zammad-data-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: zammad-adv-redis
+    command: redis-server --save "" --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - zammad-data-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 320M
+    restart: unless-stopped
+
+  smtp:
+    image: mailhog/mailhog:v1.0.1
+    container_name: zammad-adv-smtp
+    ports:
+      - "8025:8025"
+    networks:
+      - zammad-mail-net
+    restart: unless-stopped
+
+  init:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-adv-init
+    command: ["zammad-init"]
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_adv_data:/opt/zammad/storage
+    networks:
+      - zammad-data-net
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    restart: on-failure
+
+  railsserver:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-adv-railsserver
+    command: ["zammad-railsserver"]
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_adv_data:/opt/zammad/storage
+    networks:
+      - zammad-app-net
+      - zammad-data-net
+      - zammad-mail-net
+    depends_on:
+      - init
     deploy:
       resources:
         limits:
           cpus: "2.0"
-          memory: G
-    logging:
-      driver: json-file
-      options:
-        max-size: "100m"
-        max-file: "5"
-    networks:
-      - it-stack-net
+          memory: 2G
+    restart: unless-stopped
 
-networks:
-  it-stack-net:
-    driver: bridge
+  scheduler:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-adv-scheduler
+    command: ["zammad-scheduler"]
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_adv_data:/opt/zammad/storage
+    networks:
+      - zammad-data-net
+    depends_on:
+      - init
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    restart: unless-stopped
+
+  websocket:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-adv-websocket
+    command: ["zammad-websocket"]
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_adv_data:/opt/zammad/storage
+    networks:
+      - zammad-app-net
+      - zammad-data-net
+    depends_on:
+      - init
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+    restart: unless-stopped
+
+  nginx:
+    image: ghcr.io/zammad/zammad:6.3.0
+    container_name: zammad-adv-nginx
+    command: ["zammad-nginx"]
+    ports:
+      - "3000:8080"
+    environment:
+      <<: *zammad-env
+    volumes:
+      - zammad_adv_data:/opt/zammad/storage
+    networks:
+      - zammad-app-net
+    depends_on:
+      - railsserver
+      - websocket
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ | grep -qi zammad"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    restart: unless-stopped
 
 volumes:
-  zammad_data:
+  zammad_adv_postgresql:
+  zammad_adv_elasticsearch:
+  zammad_adv_data:
+
+networks:
+  zammad-app-net:
+  zammad-data-net:
+  zammad-mail-net:
