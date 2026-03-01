@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # test-lab-11-02.sh — Lab 11-02: External Dependencies
 # Module 11: Zammad — external PG, Elasticsearch, Redis (replaces memcached), mailhog SMTP
 set -euo pipefail
