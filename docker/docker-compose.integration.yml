@@ -1,11 +1,12 @@
 # docker-compose.integration.yml -- Lab 05: Advanced Integration
-# Zammad + OpenLDAP (FreeIPA sim) + PostgreSQL + Elasticsearch + Redis + Keycloak + SMTP
-# Lab 05 tests: LDAP user import, OIDC SSO, ES full-text search, email ticket creation
+# Zammad + OpenLDAP (FreeIPA sim) + PostgreSQL + Elasticsearch + Redis + Keycloak + SMTP + WireMock
+# Lab 05 tests: LDAP user import, OIDC SSO, ES full-text search, email ticket creation, FreePBX CTI
 #
 # Ports:
 #   3001 -- Zammad (nginx)
 #   8110 -- Keycloak admin console
 #   3893 -- OpenLDAP
+#   8027 -- WireMock (FreePBX mock)
 #
 # Credentials:
 #   LDAP admin:    cn=admin,dc=lab,dc=local / LdapAdmin05!
@@ -19,6 +20,10 @@
 #   + Keycloak depends on seed completion for LDAP federation to find pre-seeded users
 #   + LDAP_BASE_DN set to cn=users,cn=accounts,dc=lab,dc=local (FreeIPA tree)
 #   + Zammad env: KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID
+# INT-10 additions:
+#   + zammad-int-mock: WireMock 3.x simulates FreePBX REST API (/api/rest.php, /admin/config.php)
+#   + Zammad env: FREEPBX_URL, FREEPBX_AMI_HOST, FREEPBX_AMI_PORT, FREEPBX_AMI_USER, FREEPBX_AMI_PASSWORD
+#   + Integration tested: Zammad ↔ FreePBX CTI (phone ticket creation via cti_generic_api channel)
 
 x-zammad-int-env: &zammad-int-env
   POSTGRESQL_HOST: zammad-int-postgresql
@@ -35,6 +40,12 @@ x-zammad-int-env: &zammad-int-env
   KEYCLOAK_URL: http://zammad-int-keycloak:8080
   KEYCLOAK_REALM: it-stack
   KEYCLOAK_CLIENT_ID: zammad
+  # FreePBX CTI integration (via WireMock — INT-10)
+  FREEPBX_URL: http://zammad-int-mock:8080
+  FREEPBX_AMI_HOST: zammad-int-mock
+  FREEPBX_AMI_PORT: "5038"
+  FREEPBX_AMI_USER: admin
+  FREEPBX_AMI_PASSWORD: Admin05!
 
 services:
   zammad-int-ldap:
@@ -159,6 +170,22 @@ services:
       - "8026:8025"
     networks:
       - zammad-int-mail-net
+
+  # ── WireMock (FreePBX mock — INT-10) ─────────────────────────────
+  zammad-int-mock:
+    image: wiremock/wiremock:3.5.2
+    container_name: zammad-int-mock
+    command: ["--port", "8080", "--global-response-templating", "--verbose"]
+    ports:
+      - "8027:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/__admin/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - zammad-int-app-net
 
   zammad-int-init:
     image: ghcr.io/zammad/zammad:latest

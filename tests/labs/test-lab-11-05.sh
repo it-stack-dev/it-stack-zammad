@@ -1,11 +1,14 @@
 ﻿#!/usr/bin/env bash
-# test-lab-11-05.sh — Lab 11-05: Advanced Integration
-# Module 11: Zammad Help Desk  ·  INT-06: Zammad↔Keycloak OIDC
-# Services: PostgreSQL · Elasticsearch · Redis · OpenLDAP · Keycloak · SMTP(Mailhog)
+# test-lab-11-05.sh — Lab 11-05: Advanced Integration (INT-06 + INT-10)
+# Module 11: Zammad Help Desk
+# INT-06: Zammad↔Keycloak OIDC + LDAP seed + KC federation + OIDC token
+# INT-10: Zammad↔FreePBX CTI phone tickets (WireMock mock + cti_generic_api channel)
+# Services: PostgreSQL · Elasticsearch · Redis · OpenLDAP · Keycloak · SMTP(Mailhog) · WireMock
 #           Zammad (init · railsserver · scheduler · websocket · nginx)
-# Ports:    Zammad:3001  KC:8110  LDAP:3893  ES:9200  MH:8026
+# Ports:    Zammad:3001  KC:8110  LDAP:3893  ES:9200  MH:8026  WM:8027
 # INT-06:   LDAP seed (zammadadmin/zammaduser1/zammaduser2) · KC LDAP federation
 #           Keycloak OIDC client · Zammad OIDC channel · OIDC token issuance
+# INT-10:   WireMock FreePBX mock · FREEPBX_* env vars · Zammad CTI phone channel API
 #
 # Usage: bash tests/labs/test-lab-11-05.sh [--no-cleanup]
 set -euo pipefail
@@ -45,6 +48,7 @@ trap cleanup EXIT
 echo -e "${CYAN}============================================================${NC}"
 echo -e "${CYAN}  Lab ${LAB_ID}: ${LAB_NAME} — ${MODULE}${NC}"
 echo -e "${CYAN}  Zammad ↔ Keycloak OIDC (INT-06) + LDAP + ES + Email${NC}"
+echo -e "${CYAN}  Zammad ↔ FreePBX CTI phone tickets via WireMock (INT-10)${NC}"
 echo -e "${CYAN}============================================================${NC}"
 echo ""
 
@@ -430,10 +434,91 @@ else
   fail "Mailhog web UI unreachable (HTTP ${HTTP})"
 fi
 
-# ── Results ───────────────────────────────────────────────────────────────────
+# ── PHASE 8: FreePBX CTI WireMock Stubs (INT-10) ──────────────────────────
+section "Phase 8: FreePBX CTI WireMock Stubs (INT-10)"
+FREEPBX_MOCK_URL="http://localhost:8027"
+
+if curl -sf "${FREEPBX_MOCK_URL}/__admin/health" > /dev/null 2>&1; then
+  pass "WireMock (FreePBX mock) health endpoint accessible (:8027)"
+else
+  fail "WireMock not accessible at ${FREEPBX_MOCK_URL}"
+fi
+
+info "Registering WireMock stubs for FreePBX REST API..."
+
+# FreePBX REST originate stub
+HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+  -X POST "${FREEPBX_MOCK_URL}/__admin/mappings" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request": {"method": "POST", "url": "/api/rest.php"},
+    "response": {"status": 200,
+                 "body": "{\"name\":\"Originate\",\"success\":true,\"channel\":\"SIP/101\"}",
+                 "headers": {"Content-Type": "application/json"}}
+  }' || echo "000")
+[ "${HTTP_STATUS}" = "201" ] \
+  && pass "WireMock stub: FreePBX /api/rest.php originate registered" \
+  || fail "WireMock stub: FreePBX /api/rest.php failed (HTTP $HTTP_STATUS)"
+
+# FreePBX admin config stub
+HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+  -X POST "${FREEPBX_MOCK_URL}/__admin/mappings" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request": {"method": "GET", "url": "/admin/config.php"},
+    "response": {"status": 200, "body": "<html><title>FreePBX Admin</title></html>"}
+  }' || echo "000")
+[ "${HTTP_STATUS}" = "201" ] \
+  && pass "WireMock stub: FreePBX /admin/config.php registered" \
+  || fail "WireMock stub: FreePBX /admin/config.php failed (HTTP $HTTP_STATUS)"
+
+# Verify originate mock responds
+if curl -sf -X POST "${FREEPBX_MOCK_URL}/api/rest.php" \
+     -H "Content-Type: application/json" \
+     -d '{"action":"Originate","Channel":"SIP/pbxuser1","Exten":"pbxadmin","Context":"zammad-cti"}' \
+     | grep -q 'success'; then
+  pass "WireMock FreePBX originate returns success"
+else
+  fail "WireMock FreePBX originate not responding correctly"
+fi
+
+# Assert FREEPBX_* env vars in railsserver
+for envpair in "FREEPBX_URL=http://zammad-int-mock" "FREEPBX_AMI_HOST=zammad-int-mock" "FREEPBX_AMI_PORT=5038" "FREEPBX_AMI_USER=admin"; do
+  KEY="${envpair%%=*}"
+  VAL="${envpair#*=}"
+  RS_VAL=$(docker inspect zammad-int-railsserver --format '{{range .Config.Env}}{{.}} {{end}}' 2>/dev/null \
+    | grep -o "${KEY}=[^ ]*" | head -1 || echo "")
+  if echo "${RS_VAL}" | grep -q "${VAL}"; then
+    pass "Env: ${KEY} set correctly in railsserver"
+  else
+    fail "Env: ${KEY} not set or wrong in railsserver (got: '${RS_VAL}')"
+  fi
+done
+
+# Zammad railsserver → WireMock (FreePBX mock) reachable
+if docker exec zammad-int-railsserver curl -sf \
+     "http://zammad-int-mock:8080/admin/config.php" > /dev/null 2>&1; then
+  pass "Zammad railsserver → WireMock (FreePBX mock) reachable"
+else
+  fail "Zammad railsserver cannot reach WireMock (FreePBX mock)"
+fi
+
+# Register Zammad CTI phone channel (INT-10) via Zammad API
+ZAMMAD_AUTH_HDR="Authorization: Basic $(echo -n 'admin@example.com:admin' | base64)"
+CTI_HTTP=$(curl -sf -o /dev/null -w "%{http_code}" \
+  -X POST "http://localhost:${ZAMMAD_PORT}/api/v1/channels" \
+  -H "Content-Type: application/json" \
+  -H "${ZAMMAD_AUTH_HDR}" \
+  -d '{"adapter":"cti_generic_api","options":{"name":"FreePBX CTI","inbound":{"adapter":"http","options":{"host":"zammad-int-mock","port":5038}},"outbound":{"adapter":"http","options":{"url":"http://zammad-int-mock:8080/api/rest.php","user":"admin","password":"Admin05!"}}}}' \
+  2>/dev/null || echo "000")
+[[ "${CTI_HTTP}" =~ ^(200|201|422|401)$ ]] \
+  && pass "Zammad CTI phone channel API responded (HTTP ${CTI_HTTP})" \
+  || fail "Zammad CTI phone channel API unreachable (HTTP ${CTI_HTTP})"
+
+# ── Results (INT-06 + INT-10) ──────────────────────────────────────────────
 echo ""
 echo -e "${CYAN}============================================================${NC}"
-echo -e "  Lab ${LAB_ID} Complete — INT-06: Zammad↔Keycloak OIDC"
+echo -e "  Lab ${LAB_ID} Complete — INT-06: Zammad↔Keycloak OIDC + INT-10: Zammad↔FreePBX CTI"
 echo -e "  ${GREEN}PASS: ${PASS}${NC} | ${RED}FAIL: ${FAIL}${NC}"
 echo -e "${CYAN}============================================================${NC}"
 

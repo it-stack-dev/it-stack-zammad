@@ -207,7 +207,7 @@ jobs:
         if: always()
         run: docker compose -f docker/docker-compose.sso.yml down -v
   lab-05-smoke:
-    name: Lab 05 -- Zammad Advanced Integration (INT-06 Zammad<->Keycloak OIDC + LDAP + ES)
+    name: Lab 05 -- Zammad Advanced Integration (INT-06 Zammad<->Keycloak OIDC + INT-10 Zammad<->FreePBX CTI)
     runs-on: ubuntu-latest
     needs: validate
     continue-on-error: true
@@ -223,6 +223,8 @@ jobs:
         run: timeout 120 bash -c 'until docker exec zammad-int-ldap ldapsearch -x -H ldap://localhost -b dc=lab,dc=local -D cn=admin,dc=lab,dc=local -w LdapAdmin05! > /dev/null 2>&1; do sleep 5; done'
       - name: Wait for LDAP seed to complete
         run: timeout 120 bash -c 'until docker inspect zammad-int-ldap-seed --format "{{.State.Status}}" 2>/dev/null | grep -q exited; do sleep 5; done'
+      - name: Wait for WireMock
+        run: timeout 60 bash -c 'until curl -sf http://localhost:8027/__admin/health; do sleep 5; done'
       - name: Wait for Keycloak
         run: timeout 240 bash -c 'until curl -sf http://localhost:8110/health/ready | grep -q UP; do sleep 5; done'
       - name: Wait for Elasticsearch
