@@ -1,0 +1,77 @@
+# zammad-ldap-seed.ldif
+# FreeIPA-style LDAP seed for Zammad Lab 05 (INT-06: Zammad↔Keycloak OIDC)
+# Tree:  cn=accounts,dc=lab,dc=local
+# Users: zammadadmin · zammaduser1 · zammaduser2  (pw: Lab05Password!)
+# Groups: cn=admins · cn=zammad-users
+
+# ── Organizational units (FreeIPA-style) ─────────────────────────────────────
+dn: cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: nsContainer
+cn: accounts
+
+dn: cn=users,cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: nsContainer
+cn: users
+
+dn: cn=groups,cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: nsContainer
+cn: groups
+
+# ── Users ────────────────────────────────────────────────────────────────────
+dn: uid=zammadadmin,cn=users,cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+uid: zammadadmin
+cn: Zammad Admin
+sn: Admin
+givenName: Zammad
+mail: zammadadmin@lab.local
+userPassword: Lab05Password!
+description: Zammad help-desk administrator — lab seed account
+
+dn: uid=zammaduser1,cn=users,cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+uid: zammaduser1
+cn: Zammad User One
+sn: User One
+givenName: Zammad
+mail: zammaduser1@lab.local
+userPassword: Lab05Password!
+description: Zammad standard user — lab seed account
+
+dn: uid=zammaduser2,cn=users,cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+uid: zammaduser2
+cn: Zammad User Two
+sn: User Two
+givenName: Zammad
+mail: zammaduser2@lab.local
+userPassword: Lab05Password!
+description: Zammad standard user — lab seed account
+
+# ── Groups ───────────────────────────────────────────────────────────────────
+dn: cn=admins,cn=groups,cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: groupOfNames
+cn: admins
+description: Zammad administrators group
+member: uid=zammadadmin,cn=users,cn=accounts,dc=lab,dc=local
+
+dn: cn=zammad-users,cn=groups,cn=accounts,dc=lab,dc=local
+objectClass: top
+objectClass: groupOfNames
+cn: zammad-users
+description: Zammad standard users group
+member: uid=zammaduser1,cn=users,cn=accounts,dc=lab,dc=local
+member: uid=zammaduser2,cn=users,cn=accounts,dc=lab,dc=local
