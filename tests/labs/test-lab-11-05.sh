@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # test-lab-11-05.sh — Lab 11-05: Advanced Integration (INT-06 + INT-10)
 # Module 11: Zammad Help Desk
 # INT-06: Zammad↔Keycloak OIDC + LDAP seed + KC federation + OIDC token
